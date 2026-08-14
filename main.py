@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 from langchain.tools import tool
 from langchain.chat_models import init_chat_model
+from langgraph.graph import MessagesState
 
 load_dotenv()
 
@@ -58,31 +59,109 @@ model_with_tools = model.bind_tools(tools)
 from langchain.messages import AnyMessage
 from typing_extensions import TypedDict, Annotated
 import operator
+from pydantic import BaseModel, Field
 
-
-class MessagesState(TypedDict):
-    messages: Annotated[list[AnyMessage], operator.add]
+class PipelineState(TypedDict):
+    task: str
+    plan: list[str]
+    research_results: Annotated[list[str], operator.add]
+    output: str
     llm_calls: int
+
+class PlannerSchema(BaseModel):
+    sub_tasks: list[str] = Field(description="List of 3 to 4 sub-tasks or research questions.")
+
+class ResearcherSchema(BaseModel):
+    sub_tasks: list[str] = Field(description="List of 3 to 4 research findings.")
+
+class SummarizerSchema(BaseModel):
+    summary: str = Field(description="2-4 sentence summary of the research findings. Include a 2 bullet point list of the key takeaways.")
+
 
 # Step 3: Define model node
 from langchain.messages import SystemMessage
 
 
-def llm_call(state: MessagesState):
-    """LLM decides whether to call a tool or not"""
+def planner_call(state: PipelineState):
+    """LLM breaks down the task into a plan of action"""
+
+    task = state["task"]
+
+    planner_model = model.with_structured_output(PlannerSchema)
+
+    result = planner_model.invoke([
+        SystemMessage(content="You are a project planner. Break down the user's request into actionable sub-tasks."),
+        HumanMessage(content=f"Task: {task}")
+    ])
 
     return {
-        "messages": [
-            model_with_tools.invoke(
-                [
-                    SystemMessage(
-                        content="You are a helpful assistant tasked with performing arithmetic on a set of inputs."
-                    )
-                ]
-                + state["messages"]
-            )
-        ],
-        "llm_calls": state.get('llm_calls', 0) + 1
+        "plan": result.sub_tasks}
+
+# def researcher(state: PipelineState):
+#     """LLM researches each sub-task and returns results"""
+
+#     plan = state["plan"]
+
+#     researcher_model = model.with_structured_output(ResearcherSchema)
+
+#     result = researcher_model.invoke([
+#         SystemMessage(content="You are a researcher. Research each sub-task and return your findings."),
+#         HumanMessage(content=f"Plan: {plan}")
+#     ])
+
+#     return {
+#         "research_results": result.sub_tasks}
+
+# def summarizer(state: PipelineState):
+#     """LLM summarizes the research results"""
+
+#     research_results = state["research_results"]
+
+#     summarizer_model = model.with_structured_output(SummarizerSchema)
+
+#     result = summarizer_model.invoke([
+#         SystemMessage(content="You are a summarizer. Summarize the research findings."),
+#         HumanMessage(content=f"Research Results: {research_results}")
+#     ])
+
+#     return {
+#         "output": result.summary,
+#     }
+
+def researcher(state: PipelineState):
+    """Researcher Node (Stubbed): Simulates gathering research for each sub-task."""
+    plan = state.get("plan", [])
+    
+    print(f"\n--- [RESEARCHER NODE] Processing {len(plan)} sub-tasks ---")
+    
+    # Fake research findings matching the plan topics
+    fake_findings = [
+        "Finding 1: AsyncIO operates on a single-threaded event loop using non-blocking I/O tasks.",
+        "Finding 2: Multiprocessing spawns separate OS processes with dedicated Python interpreters, bypassing the GIL.",
+        "Finding 3: Use AsyncIO for network/disk bound tasks; use Multiprocessing for heavy CPU computation."
+    ]
+
+    return {
+        "research_results": fake_findings
+    }
+
+
+def summarizer(state: PipelineState):
+    """Summarizer Node (Stubbed): Simulates synthesizing research results into a final output."""
+    research_results = state.get("research_results", [])
+    
+    print("\n--- [SUMMARIZER NODE] Synthesizing final summary ---")
+    
+    # Fake synthesized summary
+    fake_summary = (
+        "## Summary of Python Concurrency\n\n"
+        "1. **AsyncIO**: Best for I/O-bound tasks (web requests, database calls). Runs concurrently on a single thread.\n"
+        "2. **Multiprocessing**: Best for CPU-bound tasks (math, data processing). Runs in parallel across multiple CPU cores.\n\n"
+        "**Rule of Thumb:** If your code spends most of its time waiting, use AsyncIO. If it spends time computing, use Multiprocessing."
+    )
+
+    return {
+        "output": fake_summary
     }
 
 
@@ -91,7 +170,7 @@ def llm_call(state: MessagesState):
 from langchain.messages import ToolMessage
 
 
-def tool_node(state: MessagesState):
+def tool_node(state: PipelineState):
     """Performs the tool call"""
 
     result = []
@@ -108,7 +187,7 @@ from langgraph.graph import StateGraph, START, END
 
 
 # Conditional edge function to route to the tool node or end based upon whether the LLM made a tool call
-def should_continue(state: MessagesState) -> Literal["tool_node", END]:
+def should_continue(state: PipelineState) -> Literal["tool_node", END]:
     """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
 
     messages = state["messages"]
@@ -124,20 +203,19 @@ def should_continue(state: MessagesState) -> Literal["tool_node", END]:
 # Step 6: Build agent
 
 # Build workflow
-agent_builder = StateGraph(MessagesState)
+agent_builder = StateGraph(PipelineState)
 
 # Add nodes
-agent_builder.add_node("llm_call", llm_call)
-agent_builder.add_node("tool_node", tool_node)
+agent_builder.add_node("planner_call", planner_call)
+agent_builder.add_node("researcher", researcher)
+agent_builder.add_node("summarizer", summarizer)
 
 # Add edges to connect nodes
-agent_builder.add_edge(START, "llm_call")
-agent_builder.add_conditional_edges(
-    "llm_call",
-    should_continue,
-    ["tool_node", END]
-)
-agent_builder.add_edge("tool_node", "llm_call")
+agent_builder.add_edge(START, "planner_call")
+agent_builder.add_edge("planner_call","researcher")
+agent_builder.add_edge("researcher","summarizer")
+# Fix: Connect summarizer to END
+agent_builder.add_edge("summarizer", END)
 
 # Compile the agent
 agent = agent_builder.compile()
@@ -155,8 +233,9 @@ print("Graph saved to graph.png!\n")
 # Invoke
 from langchain_core.messages import HumanMessage
 
-messages = [HumanMessage(content="Add 3 and 4.")]
-result = agent.invoke({"messages": messages})
+result = agent.invoke({
+    "task": "Explain the difference between AsyncIO and Multiprocessing in Python with code examples."
+})
 
-for m in result["messages"]:
-    m.pretty_print()
+print("GENERATED PLAN:", result["plan"])
+print("\nFINAL SUMMARY:\n", result["output"])
