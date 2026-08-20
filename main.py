@@ -8,6 +8,8 @@ from typing_extensions import TypedDict, Annotated
 import operator
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, Any
+
+
 load_dotenv()
 
 model = init_chat_model(
@@ -61,37 +63,6 @@ def planner_call(state: PipelineState):
 
     return {
         "plan": result.sub_tasks}
-
-# def researcher(state: PipelineState):
-#     """LLM researches each sub-task and returns results"""
-
-#     plan = state["plan"]
-
-#     researcher_model = model.with_structured_output(ResearcherSchema)
-
-#     result = researcher_model.invoke([
-#         SystemMessage(content="You are a researcher. Research each sub-task and return your findings."),
-#         HumanMessage(content=f"Plan: {plan}")
-#     ])
-
-#     return {
-#         "research_results": result.sub_tasks}
-
-# def summarizer(state: PipelineState):
-#     """LLM summarizes the research results"""
-
-#     research_results = state["research_results"]
-
-#     summarizer_model = model.with_structured_output(SummarizerSchema)
-
-#     result = summarizer_model.invoke([
-#         SystemMessage(content="You are a summarizer. Summarize the research findings."),
-#         HumanMessage(content=f"Research Results: {research_results}")
-#     ])
-
-#     return {
-#         "output": result.summary,
-#     }
 
 
 def make_researcher_node(client, mcp_tools: list):
@@ -207,6 +178,8 @@ def build_agent(client, mcp_tools: list):
 
 
 async def run_pipeline(user_task: str, client, mcp_tools: list) -> str:
+    from client import log_response
+    
     agent = build_agent(client, mcp_tools)
 
     try:
@@ -217,8 +190,25 @@ async def run_pipeline(user_task: str, client, mcp_tools: list) -> str:
         print(f"(Skipping graph image — rendering failed: {e})")
  
     initial_state = {"task": user_task}
-    result = await agent.ainvoke(initial_state)
- 
-    print("\nGENERATED PLAN:", result["plan"])
-    return result["output"]
+    final_state = await agent.ainvoke(initial_state)
 
+    print("\nGENERATED PLAN:", final_state.get("plan", []))
+
+    # 2. Extract state outputs safely
+    query = final_state.get("task", user_task)
+    plan = final_state.get("plan", [])
+    research_results = final_state.get("research_results", [])
+    summary = final_state.get("output", "")
+
+    # 3. Call log_response from client.py
+    log_status = await log_response(
+        client=client,
+        mcp_tools=mcp_tools,
+        query=query,
+        plan=plan,
+        research_results=research_results,
+        summary=summary
+    )
+    print(f"\n[LOGGER]: {log_status}")
+
+    return summary
